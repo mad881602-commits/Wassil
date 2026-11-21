@@ -1,4 +1,4 @@
-name: Build and Release Debug APK
+name: Build Signed Release APK
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  build-apk:
+  build-release-apk:
     runs-on: ubuntu-latest
 
     steps:
@@ -42,26 +42,11 @@ jobs:
       - name: Verify Java environment
         run: |
           set -e
-          echo "Checking java -version:"
           java -version
-          echo "JAVA_HOME=${JAVA_HOME}"
           if [ -z "${JAVA_HOME}" ]; then
             echo "ERROR: JAVA_HOME is not set."
             exit 1
           fi
-          JAVA_VER_OUTPUT=$(java -version 2>&1 | head -n 1)
-          echo "Detected Java version line: ${JAVA_VER_OUTPUT}"
-          JAVA_MAJOR=$(echo "${JAVA_VER_OUTPUT}" | sed -E 's/.*"([0-9]+)(\.[0-9]+)*".*/\1/')
-          if ! echo "${JAVA_MAJOR}" | grep -Eq '^[0-9]+$'; then
-            echo "ERROR: Unable to detect active Java major version."
-            exit 1
-          fi
-          echo "Active Java major version: ${JAVA_MAJOR}"
-          if [ "${JAVA_MAJOR}" -lt 17 ]; then
-            echo "ERROR: Active Java version (${JAVA_MAJOR}) is lower than required Java 17."
-            exit 1
-          fi
-          echo "Java environment verified successfully (Java ${JAVA_MAJOR} >= 17)."
 
       - name: Accept Android SDK Licenses
         run: |
@@ -73,12 +58,10 @@ jobs:
           SDKMANAGER=$(find "${SDK_ROOT}" -name "sdkmanager" -type f 2>/dev/null | head -n 1 || true)
           if [ -n "${SDKMANAGER}" ]; then
             yes | "${SDKMANAGER}" --licenses > /dev/null || true
-            echo "Accepted Android SDK licenses via ${SDKMANAGER}."
           else
             mkdir -p "${SDK_ROOT}/licenses"
             printf "\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > "${SDK_ROOT}/licenses/android-sdk-license"
             printf "\n84831b9409646a918e30573bab4c9c91346d8abd" > "${SDK_ROOT}/licenses/android-sdk-preview-license"
-            echo "Pre-populated Android SDK license hashes."
           fi
 
       - name: Set up Gradle 9.3.1
@@ -86,174 +69,159 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Create temporary debug keystore
+      - name: Validate Release Signing Secrets and Prepare Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
           set -e
-          if [ -f "./debug.keystore" ]; then
-            echo "./debug.keystore already exists."
-          else
-            echo "Generating temporary ./debug.keystore..."
-            "${JAVA_HOME}/bin/keytool" -genkeypair -v \
-              -keystore ./debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
-          if [ ! -f "./debug.keystore" ]; then
-            echo "ERROR: ./debug.keystore could not be created."
+          MISSING=""
+          if [ -z "${KEYSTORE_BASE64}" ]; then MISSING="${MISSING} KEYSTORE_BASE64"; fi
+          if [ -z "${STORE_PASSWORD}" ]; then MISSING="${MISSING} STORE_PASSWORD"; fi
+          if [ -z "${KEY_PASSWORD}" ]; then MISSING="${MISSING} KEY_PASSWORD"; fi
+          if [ -z "${KEY_ALIAS}" ]; then MISSING="${MISSING} KEY_ALIAS"; fi
+
+          if [ -n "${MISSING}" ]; then
+            echo "ERROR: Missing required GitHub Actions Release signing secrets:${MISSING}"
+            echo "Please add KEYSTORE_BASE64, STORE_PASSWORD, KEY_PASSWORD, and KEY_ALIAS under:"
+            echo "Repository -> Settings -> Secrets and variables -> Actions."
+            echo "Refusing to auto-generate a certificate or fall back to a debug keystore."
             exit 1
           fi
-          echo "Confirmed ./debug.keystore exists."
 
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace --no-daemon
+          KEYSTORE_FILE="${RUNNER_TEMP}/release-signing.jks"
+          printf '%s' "${KEYSTORE_BASE64}" | tr -d '[:space:]' | base64 --decode > "${KEYSTORE_FILE}"
+          chmod 600 "${KEYSTORE_FILE}"
 
-      - name: Verify debug APK
+          if [ ! -s "${KEYSTORE_FILE}" ]; then
+            echo "ERROR: Decoded keystore file is empty. Verify KEYSTORE_BASE64 is valid Base64."
+            exit 1
+          fi
+
+          # Validate keystore password and verify that the specified KEY_ALIAS exists
+          if ! "${JAVA_HOME}/bin/keytool" -list \
+            -keystore "${KEYSTORE_FILE}" \
+            -storepass:env STORE_PASSWORD \
+            -alias "${KEY_ALIAS}" > /dev/null 2>&1; then
+            echo "ERROR: Unable to open keystore or find alias specified in KEY_ALIAS."
+            echo "Verify STORE_PASSWORD, KEY_ALIAS, and KEYSTORE_BASE64."
+            exit 1
+          fi
+
+          # app/build.gradle.kts expects keyAlias "upload" in signingConfigs.release.
+          # If the user's keystore uses a different alias, map only the entry label in the
+          # temporary runner copy (this keeps the exact same private key, certificate, and fingerprints).
+          ALIAS_LOWER=$(printf '%s' "${KEY_ALIAS}" | tr '[:upper:]' '[:lower:]')
+          if [ "${ALIAS_LOWER}" != "upload" ]; then
+            "${JAVA_HOME}/bin/keytool" -changealias \
+              -keystore "${KEYSTORE_FILE}" \
+              -storepass:env STORE_PASSWORD \
+              -keypass:env KEY_PASSWORD \
+              -alias "${KEY_ALIAS}" \
+              -destalias upload
+          fi
+
+          echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "${GITHUB_ENV}"
+          echo "Release keystore validated and prepared in temporary runner storage."
+
+      - name: Build Signed Release APK
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --stacktrace --no-daemon
+
+      - name: Verify Signed Release APK (Non-Debuggable & Release Certificate)
         run: |
           set -e
-          EXPECTED_APK="app/build/outputs/apk/debug/app-debug.apk"
-          if [ ! -e "${EXPECTED_APK}" ]; then
-            echo "ERROR: Expected APK not found at ${EXPECTED_APK}"
-            if [ -d "app/build/outputs/apk" ]; then
-              echo "Searching inside app/build/outputs/apk:"
-              find app/build/outputs/apk -name "*.apk" -print || true
-            else
-              echo "Directory app/build/outputs/apk does not exist."
-            fi
+          RELEASE_APK="app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "${RELEASE_APK}" ] || [ ! -s "${RELEASE_APK}" ]; then
+            echo "ERROR: Expected signed release APK not found or empty at ${RELEASE_APK}"
+            find app/build/outputs/apk -name "*.apk" -print 2>/dev/null || true
             exit 1
           fi
-          if [ ! -f "${EXPECTED_APK}" ]; then
-            echo "ERROR: ${EXPECTED_APK} is not a regular file."
-            exit 1
-          fi
-          if [ ! -s "${EXPECTED_APK}" ]; then
-            echo "ERROR: ${EXPECTED_APK} is empty."
-            exit 1
-          fi
-          case "${EXPECTED_APK}" in
-            *.apk) ;;
-            *)
-              echo "ERROR: ${EXPECTED_APK} does not have the .apk extension."
-              exit 1
-              ;;
-          esac
-          if [ "${EXPECTED_APK}" != "app/build/outputs/apk/debug/app-debug.apk" ]; then
-            echo "ERROR: APK path mismatch."
-            exit 1
-          fi
-          echo "Verified exact debug APK: ${EXPECTED_APK}"
 
-      - name: Upload debug APK artifact
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          AAPT2=$(find "${SDK_ROOT}/build-tools" -name "aapt2" -type f 2>/dev/null | sort -V | tail -n 1 || true)
+          APKSIGNER=$(find "${SDK_ROOT}/build-tools" -name "apksigner" -type f 2>/dev/null | sort -V | tail -n 1 || true)
+
+          if [ -z "${AAPT2}" ] || [ -z "${APKSIGNER}" ]; then
+            echo "ERROR: Android build-tools (aapt2 / apksigner) not found under ${SDK_ROOT}/build-tools."
+            exit 1
+          fi
+
+          BADGING=$("${AAPT2}" dump badging "${RELEASE_APK}")
+          echo "${BADGING}" | grep -E "^package:|^sdkVersion:|^targetSdkVersion:|^native-code:" || true
+
+          if ! echo "${BADGING}" | grep -q "package: name='com.aistudio.wassil.p2pshare'"; then
+            echo "ERROR: Unexpected applicationId in built APK."
+            exit 1
+          fi
+
+          if echo "${BADGING}" | grep -qx "application-debuggable"; then
+            echo "ERROR: Built APK has application-debuggable set! Amazon Appstore requires a non-debuggable Release APK."
+            exit 1
+          fi
+
+          SIGNER_INFO=$("${APKSIGNER}" verify --print-certs "${RELEASE_APK}")
+          echo "${SIGNER_INFO}"
+
+          if echo "${SIGNER_INFO}" | grep -qi "CN=Android Debug"; then
+            echo "ERROR: APK is signed with an Android Debug certificate! A real Release signing certificate is required."
+            exit 1
+          fi
+
+          echo "VERIFIED: ${RELEASE_APK} is a valid, non-debuggable, Release-signed APK."
+
+      - name: Upload Signed Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: app-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
-      - name: Prepare APK release asset
-        id: prepare_asset
-        run: |
-          set -e
-          SOURCE_APK="app/build/outputs/apk/debug/app-debug.apk"
-          RELEASE_TMP_DIR="${RUNNER_TEMP}/apk-release-asset-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "${RELEASE_TMP_DIR}"
-          TARGET_ASSET="${RELEASE_TMP_DIR}/app-debug.apk"
-          cp "${SOURCE_APK}" "${TARGET_ASSET}"
-          if [ ! -f "${TARGET_ASSET}" ] || [ ! -s "${TARGET_ASSET}" ]; then
-            echo "ERROR: Failed to prepare release asset at ${TARGET_ASSET}"
-            exit 1
-          fi
-          echo "asset_path=${TARGET_ASSET}" >> "${GITHUB_OUTPUT}"
-          echo "Prepared release asset: ${TARGET_ASSET}"
-
-      - name: Publish APK to GitHub Releases
+      - name: Publish Signed Release APK to GitHub Releases
         id: publish_release
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          gh --version
-          ASSET_PATH="${{ steps.prepare_asset.outputs.asset_path }}"
-          if [ ! -f "${ASSET_PATH}" ]; then
-            echo "ERROR: Prepared APK does not exist at ${ASSET_PATH}"
-            exit 1
-          fi
-          if [ ! -s "${ASSET_PATH}" ]; then
-            echo "ERROR: Prepared APK is empty."
-            exit 1
-          fi
-          ASSET_FILENAME=$(basename "${ASSET_PATH}")
-          case "${ASSET_FILENAME}" in
-            *.apk) ;;
-            *)
-              echo "ERROR: Prepared asset does not end in .apk"
-              exit 1
-              ;;
-          esac
-          if [ "${ASSET_FILENAME}" != "app-debug.apk" ]; then
-            echo "ERROR: Release asset filename must be exactly app-debug.apk, got ${ASSET_FILENAME}"
-            exit 1
-          fi
+          SOURCE_APK="app/build/outputs/apk/release/app-release.apk"
+          RELEASE_TAG="release-apk-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          RELEASE_TITLE="WASSIL Release APK #${GITHUB_RUN_NUMBER}"
+          RELEASE_NOTES="Signed Release APK built by GitHub Actions for Amazon Appstore distribution.
 
-          RELEASE_TAG="debug-apk-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-          RELEASE_TITLE="Debug APK Build #${GITHUB_RUN_NUMBER}"
-          RELEASE_NOTES="Automatically generated debug APK built by GitHub Actions.
-
-          - Build Type: Automatically generated debug APK
-          - Built By: GitHub Actions
+          - Build Type: Release (non-debuggable)
+          - Application ID: com.aistudio.wassil.p2pshare
+          - Version: 1.0 (versionCode 1)
           - GitHub Actions Run Number: ${GITHUB_RUN_NUMBER}
-          - GitHub Actions Run Attempt: ${GITHUB_RUN_ATTEMPT}
-          - Source Commit SHA: ${GITHUB_SHA}
-          - Intended Use: Testing only (not a Play Store production release)
-          - Signing: Signed only with a temporary debug keystore"
+          - Source Commit SHA: ${GITHUB_SHA}"
 
-          gh release create "${RELEASE_TAG}" "${ASSET_PATH}" \
+          gh release create "${RELEASE_TAG}" "${SOURCE_APK}" \
             --title "${RELEASE_TITLE}" \
             --notes "${RELEASE_NOTES}" \
             --target "${GITHUB_SHA}" \
             --latest
 
-      - name: Report APK download result
+      - name: Clean up temporary keystore
         if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          RELEASE_TAG="debug-apk-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-          RELEASE_TITLE="Debug APK Build #${GITHUB_RUN_NUMBER}"
-          DIRECT_APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/app-debug.apk"
+          if [ -n "${KEYSTORE_PATH}" ] && [ -f "${KEYSTORE_PATH}" ]; then
+            rm -f "${KEYSTORE_PATH}"
+            echo "Removed temporary keystore from runner storage."
+          fi
 
-          if [ "${{ steps.publish_release.outcome }}" = "success" ]; then
-            echo "Confirming published release via gh release view..."
-            gh release view "${RELEASE_TAG}"
-            RELEASE_PAGE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
-            echo "Release Tag: ${RELEASE_TAG}"
-            echo "Release Title: ${RELEASE_TITLE}"
-            echo "Release Page URL: ${RELEASE_PAGE_URL}"
-            echo "APK Filename: app-debug.apk"
-            echo "DIRECT APK DOWNLOAD: ${DIRECT_APK_URL}"
-            echo "Note: The normal Actions artifact 'app-debug-apk' also remains available as a backup."
-
+      - name: Report Release APK result
+        if: always()
+        run: |
+          if [ -f "app/build/outputs/apk/release/app-release.apk" ]; then
             {
-              echo "### DIRECT APK DOWNLOAD"
-              echo "${DIRECT_APK_URL}"
-              echo ""
-              echo "- **Release Tag:** \`${RELEASE_TAG}\`"
-              echo "- **Release Title:** ${RELEASE_TITLE}"
-              echo "- **APK Filename:** \`app-debug.apk\`"
-              echo "- **Backup Artifact:** The normal GitHub Actions artifact \`app-debug-apk\` remains available as a backup."
-            } >> "${GITHUB_STEP_SUMMARY}"
-          else
-            echo "WARNING: Publishing to GitHub Releases failed."
-            if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
-              echo "The debug APK build succeeded and the Actions artifact 'app-debug-apk' remains available."
-            fi
-            {
-              echo "### WARNING: GitHub Release Publishing Failed"
-              echo "The debug APK build succeeded and the GitHub Actions artifact \`app-debug-apk\` remains available for download from this workflow run."
+              echo "### Signed Release APK Ready"
+              echo "- **Artifact Name:** \`app-release-apk\` (download directly from the **Artifacts** section of this workflow run)"
+              echo "- **File:** \`app-release.apk\`"
+              echo "- **Package:** \`com.aistudio.wassil.p2pshare\`"
+              echo "- **Verified:** Non-debuggable Release APK signed with your Release Keystore"
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
