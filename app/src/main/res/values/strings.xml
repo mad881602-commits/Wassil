@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">WASSIL</string>
+    <string name="app_subtitle_ar">مشاركة الملفات المباشرة والسريعة</string>
+    <string name="app_subtitle_en">Fast &amp; Direct P2P File Sharing</string>
+    <string name="send_ar">إرسال</string>
+    <string name="send_en">SEND</string>
+    <string name="receive_ar">استلام</string>
+    <string name="receive_en">RECEIVE</string>
+    <string name="history_ar">سجل النقل</string>
+    <string name="history_en">TRANSFER HISTORY</string>
+</resources>

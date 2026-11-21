@@ -1,0 +1,10 @@
+{
+  "name": "WASSIL",
+  "description": "Direct peer-to-peer file sharing application for Android with QR pairing, chunked transfers, SHA-256 verification, and Arabic/English RTL support.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
