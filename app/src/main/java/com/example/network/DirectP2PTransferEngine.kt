@@ -872,8 +872,8 @@ class DirectP2PTransferEngine(
                     )
 
                     _sessionState.value = TransferSessionState.Error(
-                        messageAr = "لم يكتمل استلام الملف (${manifestItem.name}) بشكل سليم (SHA-256). تم حذف النسخة غير المكتملة.",
-                        messageEn = "File integrity mismatch for ${manifestItem.name}. Incomplete file removed."
+                        messageAr = "لم يكتمل استلام الملف (${manifestItem.name}) بشكل سليم. تم حذف النسخة غير المكتملة.",
+                        messageEn = "File did not arrive completely (${manifestItem.name}). Incomplete file removed."
                     )
                     return@withContext
                 }

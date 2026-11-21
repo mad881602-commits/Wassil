@@ -239,8 +239,12 @@ fun openWifiSettingsOrPanel(context: Context) {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
     } catch (_: Exception) {
-        runCatching {
+        try {
             context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {
+            runCatching {
+                context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
         }
     }
 }
@@ -262,8 +266,16 @@ fun openHotspotSettings(context: Context) {
         }
         context.startActivity(intent)
     } catch (_: Exception) {
-        runCatching {
+        try {
             context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {
+            try {
+                context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (_: Exception) {
+                runCatching {
+                    context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+            }
         }
     }
 }

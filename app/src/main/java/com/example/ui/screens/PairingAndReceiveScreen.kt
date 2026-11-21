@@ -315,8 +315,16 @@ fun ReceiveScreen(
     val strings = LocalWassilStrings.current
     val context = LocalContext.current
 
-    var selectedTab by remember { mutableIntStateOf(0) }
+    val hasCameraHardware = remember(context) {
+        val pm = context.packageManager
+        pm.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY) ||
+            pm.hasSystemFeature(PackageManager.FEATURE_CAMERA) ||
+            pm.hasSystemFeature(PackageManager.FEATURE_CAMERA_FRONT)
+    }
+
+    var selectedTab by remember { mutableIntStateOf(if (hasCameraHardware) 0 else 1) }
     var pairingCodeInput by remember { mutableStateOf("") }
+    var cameraRuntimeUnavailable by remember { mutableStateOf(false) }
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -448,11 +456,45 @@ fun ReceiveScreen(
                             shape = RoundedCornerShape(28.dp),
                             colors = CardDefaults.cardColors(containerColor = Color.Black)
                         ) {
-                            if (hasCameraPermission) {
+                            if (!hasCameraHardware || cameraRuntimeUnavailable) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Key,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(48.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = strings.cameraUnavailableMessage,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = Color.White,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Button(
+                                        onClick = { selectedTab = 1 },
+                                        colors = ButtonDefaults.buttonColors(containerColor = WassilBluePrimary),
+                                        shape = RoundedCornerShape(14.dp),
+                                        modifier = Modifier.testTag("switch_to_pairing_code_button")
+                                    ) {
+                                        Text(strings.usePairingCodeInsteadButton, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            } else if (hasCameraPermission) {
                                 LiveCameraQrScanner(
                                     onQrCodeScanned = { scannedPayload ->
                                         ensureWifiReadyOnQrScan(context)
                                         onConnectWithCodeOrQr(scannedPayload, "")
+                                    },
+                                    onCameraUnavailable = {
+                                        cameraRuntimeUnavailable = true
                                     }
                                 )
                             } else {
@@ -757,7 +799,8 @@ private fun ReceivedFilesDirectSection(
 
 @Composable
 private fun LiveCameraQrScanner(
-    onQrCodeScanned: (String) -> Unit
+    onQrCodeScanned: (String) -> Unit,
+    onCameraUnavailable: () -> Unit
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
@@ -774,29 +817,44 @@ private fun LiveCameraQrScanner(
                 val previewView = PreviewView(ctx)
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                 cameraProviderFuture.addListener({
-                    runCatching {
+                    val bound = runCatching {
                         val cameraProvider = cameraProviderFuture.get()
-                        val preview = Preview.Builder().build().also {
-                            it.surfaceProvider = previewView.surfaceProvider
+                        val selector = when {
+                            cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) ->
+                                CameraSelector.DEFAULT_BACK_CAMERA
+                            cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) ->
+                                CameraSelector.DEFAULT_FRONT_CAMERA
+                            else -> null
                         }
-                        val imageAnalysis = ImageAnalysis.Builder()
-                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                            .build()
-                            .also { analysis ->
-                                analysis.setAnalyzer(
-                                    cameraExecutor,
-                                    QrCodeManager.QrImageAnalyzer { qrText ->
-                                        onQrCodeScanned(qrText)
-                                    }
-                                )
+                        if (selector == null) {
+                            false
+                        } else {
+                            val preview = Preview.Builder().build().also {
+                                it.surfaceProvider = previewView.surfaceProvider
                             }
-                        cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
-                            CameraSelector.DEFAULT_BACK_CAMERA,
-                            preview,
-                            imageAnalysis
-                        )
+                            val imageAnalysis = ImageAnalysis.Builder()
+                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                .build()
+                                .also { analysis ->
+                                    analysis.setAnalyzer(
+                                        cameraExecutor,
+                                        QrCodeManager.QrImageAnalyzer { qrText ->
+                                            onQrCodeScanned(qrText)
+                                        }
+                                    )
+                                }
+                            cameraProvider.unbindAll()
+                            cameraProvider.bindToLifecycle(
+                                lifecycleOwner,
+                                selector,
+                                preview,
+                                imageAnalysis
+                            )
+                            true
+                        }
+                    }.getOrDefault(false)
+                    if (!bound) {
+                        onCameraUnavailable()
                     }
                 }, ContextCompat.getMainExecutor(ctx))
                 previewView

@@ -2,6 +2,7 @@ package com.example.network
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -59,6 +60,9 @@ object HotspotConnectionManager {
 
     @SuppressLint("MissingPermission")
     private suspend fun tryStartWifiDirectGroup(context: Context): SenderHotspotCredentials? {
+        if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) {
+            return null
+        }
         return withTimeoutOrNull(3500L) {
             val deferred = CompletableDeferred<SenderHotspotCredentials?>()
             try {

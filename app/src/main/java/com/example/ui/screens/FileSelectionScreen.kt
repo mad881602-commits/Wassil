@@ -107,8 +107,20 @@ fun FileSelectionScreen(
         viewModel.addPickedUris(uris, FileCategory.PHOTO)
     }
 
+    val photosFallbackLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        viewModel.addPickedUris(uris, FileCategory.PHOTO)
+    }
+
     val videosLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        viewModel.addPickedUris(uris, FileCategory.VIDEO)
+    }
+
+    val videosFallbackLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         viewModel.addPickedUris(uris, FileCategory.VIDEO)
     }
@@ -224,9 +236,13 @@ fun FileSelectionScreen(
                                 label = strings.catPhotos,
                                 icon = Icons.Default.Image,
                                 onClick = {
-                                    photosLauncher.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                    )
+                                    runCatching {
+                                        photosLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    }.onFailure {
+                                        runCatching { photosFallbackLauncher.launch(arrayOf("image/*")) }
+                                    }
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -236,9 +252,13 @@ fun FileSelectionScreen(
                                 label = strings.catVideos,
                                 icon = Icons.Default.VideoFile,
                                 onClick = {
-                                    videosLauncher.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
-                                    )
+                                    runCatching {
+                                        videosLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                                        )
+                                    }.onFailure {
+                                        runCatching { videosFallbackLauncher.launch(arrayOf("video/*")) }
+                                    }
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -247,7 +267,7 @@ fun FileSelectionScreen(
                             FileCategoryTile(
                                 label = strings.catMusic,
                                 icon = Icons.Default.AudioFile,
-                                onClick = { audioLauncher.launch(arrayOf("audio/*")) },
+                                onClick = { runCatching { audioLauncher.launch(arrayOf("audio/*")) } },
                                 modifier = Modifier
                                     .weight(1f)
                                     .testTag("pick_music_button")
@@ -264,16 +284,18 @@ fun FileSelectionScreen(
                                 label = strings.catDocuments,
                                 icon = Icons.Default.Description,
                                 onClick = {
-                                    docsLauncher.launch(
-                                        arrayOf(
-                                            "application/pdf",
-                                            "text/plain",
-                                            "application/msword",
-                                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                            "application/vnd.ms-excel",
-                                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    runCatching {
+                                        docsLauncher.launch(
+                                            arrayOf(
+                                                "application/pdf",
+                                                "text/plain",
+                                                "application/msword",
+                                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                                "application/vnd.ms-excel",
+                                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                            )
                                         )
-                                    )
+                                    }
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -283,9 +305,11 @@ fun FileSelectionScreen(
                                 label = strings.catZipOther,
                                 icon = Icons.Default.Archive,
                                 onClick = {
-                                    zipLauncher.launch(
-                                        arrayOf("application/zip", "application/x-rar-compressed", "application/octet-stream")
-                                    )
+                                    runCatching {
+                                        zipLauncher.launch(
+                                            arrayOf("application/zip", "application/x-rar-compressed", "application/octet-stream")
+                                        )
+                                    }
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -294,7 +318,7 @@ fun FileSelectionScreen(
                             FileCategoryTile(
                                 label = strings.catAnyFile,
                                 icon = Icons.Default.FolderOpen,
-                                onClick = { anyFileLauncher.launch(arrayOf("*/*")) },
+                                onClick = { runCatching { anyFileLauncher.launch(arrayOf("*/*")) } },
                                 modifier = Modifier
                                     .weight(1f)
                                     .testTag("pick_any_file_button")
